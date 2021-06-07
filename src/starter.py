@@ -4,10 +4,17 @@ import gym
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
+import torch
+import torch.nn as nn
+import datetime
+import pytz
 
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+from stable_baselines3.common.results_plotter import load_results, ts2xy
+from stable_baselines3.common.monitor import Monitor
 
 ## define env for connectx trainig
 class ConnectXEnv(gym.Env):
@@ -86,40 +93,90 @@ class ConnectXEnv(gym.Env):
 
         print(out)
 
+## train agent of ConnectX
+# define custom CNN
+class CustomCNN(BaseFeaturesExtractor):
+    """
+    :param observation_space: (gym.Space)
+    :param features_dim: (int) Number of features extracted.
+        This corresponds to the number of unit for the last layer.
+    """
+
+    def __init__(self, observation_space: gym.spaces.Box, features_dim: int = 256):
+        super(CustomCNN, self).__init__(observation_space, features_dim)
+        # We assume CxHxW images (channels first)
+        # Re-ordering will be done by pre-preprocessing or wrapper
+        n_input_channels = observation_space.shape[0]
+        self.cnn = nn.Sequential(
+            nn.Conv2d(n_input_channels, 32, kernel_size=3, stride=1, padding=1), # 3x6x7 to 32x5x6
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1), # 32x5x6 to 64x4x5
+            nn.ReLU(),
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1), # 64x4x5 to 128x3x34
+            nn.ReLU(),
+            nn.Flatten(), # 128x3x4 to 1536
+        )
+
+        # Compute shape by doing one forward pass
+        with torch.no_grad():
+            n_flatten = self.cnn(
+                torch.as_tensor(observation_space.sample()[None]).float()
+            ).shape[1]
+
+        self.linear = nn.Sequential(nn.Linear(n_flatten, features_dim), nn.ReLU())
+
+    def forward(self, observations: torch.Tensor) -> torch.Tensor:
+        return self.linear(self.cnn(observations))
+policy_kwargs = dict(
+    features_extractor_class=CustomCNN,
+    features_extractor_kwargs=dict(features_dim=7),
+)
+
+# define callback
+num_update = 0
+best_mean_reward = -np.inf
+
+def callback(_locals, _globals):
+    global num_update
+    global best_mean_reward
+
+    if (num_update+1)%1000==0:
+        _, y = ts2xy(load_results(model_dir), "timesteps")
+        if len(y)>0:
+            mean_reward = np.mean(y[-1000:])
+            update_model = mean_reward > best_mean_reward
+            if update_model:
+                best_mean_reward = mean_reward
+                _locals["self"].save("./models/best_model")
+
+            print("time: {}, num_update: {}, mean: {:.3f}, best_mean: {:.3f}, model_update: {}".format(
+                datetime.datetime.now(pytz.timezone("Asia/Tokyo")),
+                num_update,
+                mean_reward,
+                best_mean_reward,
+                update_model
+            ))
+
+    num_update += 1
+    return True
+
+
 ## create env
 env = make("connectx", debug=False)
-#env = ConnectXEnv(env, policy="negamax")
-connectXEnv = ConnectXEnv(env, policy="negamax")
+connectXEnv = ConnectXEnv(env, policy="random")
 
-print("checking env...")
-check_env(connectXEnv, True, True)
-print("check done.")
+# print("checking env...")
+# check_env(connectXEnv, True, True)
+# print("check done.")
 
-BLEnv = DummyVecEnv([lambda: connectXEnv])
+model_dir = "./models"
+BLEnv = Monitor(connectXEnv, model_dir, allow_early_resets=True)
+BLEnv = DummyVecEnv([lambda: BLEnv])
 
-## define callback
-
-class TqdmCallback(object):
-    def __init__(self):
-        self.pbar = None
-    
-    def __call__(self, _locals, _globals):
-        if self.pbar is None:
-            self.pbar = tqdm(total=_locals['nupdates'])
-            
-        self.pbar.update(1)
-        
-        if _locals['update'] == _locals['nupdates']:
-            self.pbar.close()
-            self.pbar = None
-
-        return True
-
-callback = TqdmCallback()
-
-## train agent of ConnectX
-model = PPO("MlpPolicy", BLEnv, verbose=0)
-model.learn(total_timesteps=100000)
+# train
+log_dir = "./logs"
+model = PPO("CnnPolicy", BLEnv, policy_kwargs=policy_kwargs, verbose=1, tensorboard_log=log_dir)
+model.learn(total_timesteps=1000000, callback=callback)
 
 print("train done")
 

@@ -6,9 +6,11 @@ services:
     volumes:
       - ../src:/project/src
       - ../data:/project/data
-      - ../model:/project/model
+      - ../models:/project/models
+      - ../logs:/project/logs
     working_dir: /project
     ports:
-      - 8888:8888
+      - 8888:8888 # jupyter
+      - 6006:6006 # tensorboard
     #command: apt-get install python-opengl ffmpeg freeglut3-dev xvfb
     #command: jupyter notebook --ip=0.0.0.0 --allow-root --no-browser
