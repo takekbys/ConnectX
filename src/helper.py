@@ -3,34 +3,40 @@ from kaggle_environments.envs.connectx.connectx import renderer
 import gym
 import numpy as np
 import matplotlib.pyplot as plt
-from tqdm.auto import tqdm
 import torch
 import torch.nn as nn
 import datetime
 import pytz
-
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.results_plotter import load_results, ts2xy
 from stable_baselines3.common.monitor import Monitor
+# from stable_baselines3.common import set_global_seeds
 
-## define env for connectx trainig
+
+## define env for connectx trainig using stable-baselines3
 class ConnectXEnv(gym.Env):
     
-    def __init__(self, env, policy="negamax"):
+    def __init__(self, policy="negamax", turn="sente"):
         super(ConnectXEnv, self).__init__()
-        self.env = env
-        self.trainer = self.env.train([None, policy])
+        self.env = make("connectx", debug=False)
+        if turn=="sente":
+            self.trainer = self.env.train([None, policy])
+        elif turn=="gote":
+            self.trainer = self.env.train([policy, None])
+        else:
+            raise ValueError("Turn is incorrect! Select \"sente\" or \"gote\"!")
 
         # アクション数定義
-        ACTION_NUM = env.configuration["columns"]
+        ACTION_NUM = self.env.configuration["columns"]
         self.action_space = gym.spaces.Discrete(ACTION_NUM)
 
         # 状態の範囲を定義
-        self.WIDTH = env.configuration["columns"]
-        self.HEIGHT = env.configuration["rows"]
+        self.WIDTH = self.env.configuration["columns"]
+        self.HEIGHT = self.env.configuration["rows"]
         
         self.obs_shape = [self.HEIGHT, self.WIDTH, 3] # treat as image
         self.observation_space = gym.spaces.Box(low=0, high=255, shape=self.obs_shape, dtype=np.uint8)
@@ -47,6 +53,10 @@ class ConnectXEnv(gym.Env):
         self.boardImg = self.board2img(self.board)
         
         return self.boardImg
+    
+    # kaggle_environment seems not to have env.seed()
+    # def seed(self, seed):
+    #     self.env.seed(seed)
 
     def step(self, action):
         action = int(action) # added this row in order to avoid error like "Invalid Action: 4 is not of type 'integer'"
@@ -80,7 +90,7 @@ class ConnectXEnv(gym.Env):
     def renderBoard(self):
         columns = self.env.configuration.columns
         rows = self.env.configuration.rows
-        board = self.state.board
+        board = self.state["board"]
 
         def print_row(values, delim="|"):
             return f"{delim} " + f" {delim} ".join(str(v) for v in values) + f" {delim}\n"
@@ -93,8 +103,18 @@ class ConnectXEnv(gym.Env):
 
         print(out)
 
-## train agent of ConnectX
-# define custom CNN
+# define functions to make wrapper for env
+def make_ConnectXEnv(rank, seed=0, policy="random", turn="sente"):
+    def _init():
+        env = ConnectXEnv(policy, turn)
+        # kaggle_environment seems not to have env.seed()
+        # env.seed(seed+rank)
+        return env
+    # set_global_seeds(seed)
+    return _init
+
+
+# define custom CNN for stable-baselines3
 class CustomCNN(BaseFeaturesExtractor):
     """
     :param observation_space: (gym.Space)
@@ -127,63 +147,35 @@ class CustomCNN(BaseFeaturesExtractor):
 
     def forward(self, observations: torch.Tensor) -> torch.Tensor:
         return self.linear(self.cnn(observations))
-policy_kwargs = dict(
-    features_extractor_class=CustomCNN,
-    features_extractor_kwargs=dict(features_dim=7),
-)
 
-# define callback
-num_update = 0
-best_mean_reward = -np.inf
+## define callback function used in model.learn
+class Callback():
+    
+    def __init__(self, model_dir="./models"):
+        self.num_update = 0
+        self.best_mean_reward = -np.inf
 
-def callback(_locals, _globals):
-    global num_update
-    global best_mean_reward
+        self.model_dir = model_dir
+    
+    def __call__(self, _locals, _globals):
+        if (self.num_update+1)%1000==0:
+            _, y = ts2xy(load_results(self.model_dir), "timesteps")
+            if len(y)>0:
+                mean_reward = np.mean(y[-1000:])
+                update_model = mean_reward > self.best_mean_reward
+                if update_model:
+                    self.best_mean_reward = mean_reward
+                    _locals["self"].save(self.model_dir + "/best_model")
 
-    if (num_update+1)%1000==0:
-        _, y = ts2xy(load_results(model_dir), "timesteps")
-        if len(y)>0:
-            mean_reward = np.mean(y[-1000:])
-            update_model = mean_reward > best_mean_reward
-            if update_model:
-                best_mean_reward = mean_reward
-                _locals["self"].save("./models/best_model")
+                print("time: {}, num_update: {}, mean: {:.3f}, best_mean: {:.3f}, model_update: {}".format(
+                    datetime.datetime.now(pytz.timezone("Asia/Tokyo")),
+                    self.num_update,
+                    mean_reward,
+                    self.best_mean_reward,
+                    update_model
+                ))
 
-            print("time: {}, num_update: {}, mean: {:.3f}, best_mean: {:.3f}, model_update: {}".format(
-                datetime.datetime.now(pytz.timezone("Asia/Tokyo")),
-                num_update,
-                mean_reward,
-                best_mean_reward,
-                update_model
-            ))
+        self.num_update += 1
 
-    num_update += 1
-    return True
+        return True
 
-
-## create env
-env = make("connectx", debug=False)
-connectXEnv = ConnectXEnv(env, policy="random")
-
-# print("checking env...")
-# check_env(connectXEnv, True, True)
-# print("check done.")
-
-model_dir = "./models"
-BLEnv = Monitor(connectXEnv, model_dir, allow_early_resets=True)
-BLEnv = DummyVecEnv([lambda: BLEnv])
-
-# train
-log_dir = "./logs"
-model = PPO("CnnPolicy", BLEnv, policy_kwargs=policy_kwargs, verbose=1, tensorboard_log=log_dir)
-model.learn(total_timesteps=1000000, callback=callback)
-
-print("train done")
-
-## play ConnectX
-state = connectXEnv.reset()
-while not connectXEnv.done:
-    action, _states = model.predict(state, deterministic=True)
-    state, reward, done, info = connectXEnv.step(action)
-    print(f"reward: {reward}, done: {done}, info: {info}")
-    connectXEnv.renderBoard()
