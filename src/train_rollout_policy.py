@@ -10,6 +10,7 @@ from helper import ConnectXEnv
 from helper import CustomCNN
 from helper import Callback
 from helper import make_ConnectXEnv
+from helper import RolloutAgent
 
 
 def train(model, envs, total_timesteps=100):
@@ -59,9 +60,9 @@ def main():
     )
     model = PPO("CnnPolicy", train_envs, policy_kwargs=policy_kwargs, verbose=1, tensorboard_log=LOG_DIR)
     
-    model = train(model, train_envs, total_timesteps=TRAIN_TIMESTEPS)
+    #model = train(model, train_envs, total_timesteps=TRAIN_TIMESTEPS)
     model_name = "/tmp"
-    model.save(MODEL_DIR + model_name)
+    #model.save(MODEL_DIR + model_name)
 
     # validate
     model = PPO.load(MODEL_DIR + model_name)
@@ -82,5 +83,27 @@ def main():
 
     env.boardshow()
 
+def testRollout():
+
+    from helper import RolloutAgent
+    from kaggle_environments import make
+    from kaggle_environments.envs.connectx.connectx import renderer
+ 
+    # prepare rollout opponent agent
+    model_name = "/tmp"
+    modelpath = MODEL_DIR + model_name
+    rollout = RolloutAgent(modelpath)
+
+    print("Test model")
+    env = make("connectx", debug=False)
+    trainer = env.train([None, rollout])
+    state = trainer.reset()
+
+    done = False
+    while not done:
+        state, reward, done, info = trainer.step(0)
+    print("reward : ", reward)
+    print(renderer(env.state, env))
+
 if __name__=="__main__":
-    main()
+    testRollout()

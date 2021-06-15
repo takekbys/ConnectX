@@ -23,12 +23,7 @@ class ConnectXEnv(gym.Env):
     def __init__(self, policy="negamax", turn="sente"):
         super(ConnectXEnv, self).__init__()
         self.env = make("connectx", debug=False)
-        if turn=="sente":
-            self.trainer = self.env.train([None, policy])
-        elif turn=="gote":
-            self.trainer = self.env.train([policy, None])
-        else:
-            raise ValueError("Turn is incorrect! Select \"sente\" or \"gote\"!")
+        self.set_trainer(policy, turn)
 
         # アクション数定義
         ACTION_NUM = self.env.configuration["columns"]
@@ -41,8 +36,15 @@ class ConnectXEnv(gym.Env):
         self.obs_shape = [self.HEIGHT, self.WIDTH, 3] # treat as image
         self.observation_space = gym.spaces.Box(low=0, high=255, shape=self.obs_shape, dtype=np.uint8)
         
-        self.num_envs = 1
         self.reset()
+    
+    def set_trainer(self, policy, turn):
+        if turn=="sente":
+            self.trainer = self.env.train([None, policy])
+        elif turn=="gote":
+            self.trainer = self.env.train([policy, None])
+        else:
+            raise ValueError("Turn is incorrect! Select \"sente\" or \"gote\"!")
 
     def reset(self):
         state = self.trainer.reset()
@@ -77,7 +79,7 @@ class ConnectXEnv(gym.Env):
         tmp = np.array(board).reshape(self.obs_shape[:2])
         boardImg = np.zeros(self.obs_shape, dtype=np.uint8)
         boardImg[:,:,0] = np.array(tmp==self.mark)*255 # ch.0 : own mark
-        boardImg[:,:,1] = np.array(tmp==(3-self.mark))*255 # ch.1 : oponent mark
+        boardImg[:,:,1] = np.array(tmp==(3-self.mark))*255 # ch.1 : opponent mark
         return boardImg
     
     def boardshow(self, verbose=0):
@@ -85,7 +87,7 @@ class ConnectXEnv(gym.Env):
         plt.imshow(self.boardImg)
         if verbose:
             print("red : own piece")
-            print("green : oponent piece")
+            print("green : opponent piece")
     
     def renderBoard(self):
         columns = self.env.configuration.columns
@@ -179,3 +181,44 @@ class Callback():
 
         return True
 
+## define agent
+class RolloutAgent():
+    def __init__(self, modelpath):
+        self.model =  PPO.load(modelpath)
+
+        self.env = make("connectx", debug=False)
+
+        # アクション数定義
+        ACTION_NUM = self.env.configuration["columns"]
+        self.action_space = gym.spaces.Discrete(ACTION_NUM)
+
+        # 状態の範囲を定義
+        self.WIDTH = self.env.configuration["columns"]
+        self.HEIGHT = self.env.configuration["rows"]
+        
+        self.obs_shape = [self.HEIGHT, self.WIDTH, 3] # treat as image
+        self.observation_space = gym.spaces.Box(low=0, high=255, shape=self.obs_shape, dtype=np.uint8)
+    
+    def obs2boardImg(self, obs):
+
+        #state, reward, done, info = obs
+        state = obs
+
+        board = state["board"]
+        mark = state["mark"]
+
+        tmp = np.array(board).reshape(self.obs_shape[:2])
+        boardImg = np.zeros(self.obs_shape, dtype=np.uint8)
+        boardImg[:,:,0] = np.array(tmp==mark)*255 # ch.0 : own mark
+        boardImg[:,:,1] = np.array(tmp==(3-mark))*255 # ch.1 : opponent mark
+        return boardImg
+    
+    def __call__(self, obs, config):
+        # obs is a state of field as an image
+
+        boardImg = self.obs2boardImg(obs)
+        boardImg = boardImg[None] # 
+        action, _states = self.model.predict(boardImg, deterministic=True)
+        
+        return int(action)
+    
