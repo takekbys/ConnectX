@@ -130,13 +130,25 @@ class CustomCNN(BaseFeaturesExtractor):
         # Re-ordering will be done by pre-preprocessing or wrapper
         n_input_channels = observation_space.shape[0]
         self.cnn = nn.Sequential(
-            nn.Conv2d(n_input_channels, 32, kernel_size=3, stride=1, padding=1), # 3x6x7 to 32x5x6
+            # 形を変えずにCNN
+            nn.Conv2d(n_input_channels, 16, kernel_size=3, stride=1, padding=1), # 3x6x7 to 16x6x7
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1), # 32x5x6 to 64x4x5
+            nn.Conv2d(16, 16, kernel_size=3, stride=1, padding=1), # 16x6x7 to 16x6x7
             nn.ReLU(),
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1), # 64x4x5 to 128x3x34
+            nn.Conv2d(16, 16, kernel_size=3, stride=1, padding=1), # 16x6x7 to 16x6x7
             nn.ReLU(),
-            nn.Flatten(), # 128x3x4 to 1536
+            nn.Conv2d(16, 16, kernel_size=3, stride=1, padding=1), # 16x6x7 to 16x6x7
+            nn.ReLU(),
+            nn.Conv2d(16, 16, kernel_size=3, stride=1, padding=1), # 16x6x7 to 16x6x7
+            nn.ReLU(),
+            nn.Conv2d(16, 16, kernel_size=3, stride=1, padding=1), # 16x6x7 to 16x6x7
+            nn.ReLU(),
+            nn.Conv2d(16, 16, kernel_size=3, stride=1, padding=1), # 16x6x7 to 16x6x7
+            nn.ReLU(),
+            # 縦方向に全結合
+            nn.Conv2d(16, 16, kernel_size=(6,1), stride=1, padding=0), # 16x6x7 to 16x1x7
+            nn.ReLU(),
+            nn.Flatten(), # 16x1x7 to 112
         )
 
         # Compute shape by doing one forward pass
